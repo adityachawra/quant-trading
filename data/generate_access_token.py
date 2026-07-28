@@ -60,6 +60,7 @@ print(f"Captured request_token automatically: {request_token}")
 # Exchange the request_token for an access_token
 session_data = kite.generate_session(request_token, api_secret=API_SECRET)
 access_token = session_data["access_token"]
+print(f"New access_token: {access_token}")
 
 # Save the access_token into .env, so your other scripts can read it later
 set_key(".env", "KITE_ACCESS_TOKEN", access_token)

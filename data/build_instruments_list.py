@@ -102,7 +102,7 @@ def main():
 
     print("Filtering...")
     filtered_df = filter_instruments(raw_df)
-    filtered_df.to_csv("data/instruments_filtered.csv", index=False)
+    filtered_df.to_csv("data/cache/instruments_filtered.csv", index=False)
     print(f"Saved {len(filtered_df)} filtered instruments to CSV")
 
     print("Saving to Postgres...")
