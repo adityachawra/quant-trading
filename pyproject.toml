@@ -11,6 +11,7 @@ dependencies = [
     "matplotlib>=3.11.1",
     "numpy>=2.4.6",
     "pandas>=3.0.3",
+    "pandas-market-calendars>=5.4.0",
     "psycopg[binary]>=3.3.4",
     "pytest>=9.1.1",
     "python-dotenv>=1.2.2",

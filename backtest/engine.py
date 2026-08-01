@@ -1,12 +1,13 @@
 import os
 import sys
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy import text
 from dotenv import load_dotenv
+import pandas_market_calendars as mcal
 
 sys.path.append(os.path.abspath("strategies/mean_reversion_bb"))
 from signal_bt import generate_signals as bb_generate_signals
@@ -16,7 +17,11 @@ from transaction_cost import leg_cost
 
 load_dotenv()
 
-FIXED_INVESTMENT = 10000
+FUND = 10000
+MAX_PORTFOLIO_RISK = 0.4
+MAX_PER_TRADE_RISK = 0.03
+MAX_PERCENTAGE_ALLOCATION_PER_TRADE = 0.2
+
 
 
 def get_db_engine():
@@ -29,148 +34,87 @@ def get_db_engine():
     return sa.create_engine(connection_string)
 
 
-def simulate_symbol(price_df: pd.DataFrame, signals: pd.Series, symbol: str,
-                     run_id: str, strategy_name: str,
-                     fixed_investment: float = FIXED_INVESTMENT) -> list:
-    """
-    Walks one symbol's signals day by day, building transaction rows.
-    Fill assumption: SAME-DAY CLOSE. strategy_name is now a parameter,
-    not a hardcoded constant — this is what makes the resulting
-    `transactions` rows correctly attributable to whichever strategy
-    actually produced these signals.
-    """
-    rows = []
-    quantity = 0
-    is_position = False
-
-    for i in range(len(signals)):
-        signal_val = signals.iloc[i]
-        trade_date = price_df.index[i]
-        close_price = price_df.iloc[i]['close']
-
-        if signal_val == 1 and not is_position:
-            quantity = int(fixed_investment // close_price)
-            if quantity == 0:
-                continue
-
-            actual_turnover = quantity * close_price
-            fees = leg_cost(actual_turnover, side="buy", is_intraday=False)
-            fees_total = sum(fees.values())
-
-            rows.append({
-                "env": "backtest", "run_id": run_id, "strategy": strategy_name,
-                "symbol": symbol, "side": "buy", "quantity": quantity,
-                "signal_time": trade_date, "order_time": trade_date, "fill_time": trade_date,
-                "signal_price": close_price, "fill_price": close_price,
-                "order_type": "market", "broker_order_id": None, "status": "filled",
-                "fees_total": fees_total, "slippage_bps": 0.0, "notes": None,
-            })
-            is_position = True
-
-        elif signal_val == -1 and is_position:
-            actual_turnover = quantity * close_price
-            fees = leg_cost(actual_turnover, side="sell", is_intraday=False)
-            fees_total = sum(fees.values())
-
-            rows.append({
-                "env": "backtest", "run_id": run_id, "strategy": strategy_name,
-                "symbol": symbol, "side": "sell", "quantity": quantity,
-                "signal_time": trade_date, "order_time": trade_date, "fill_time": trade_date,
-                "signal_price": close_price, "fill_price": close_price,
-                "order_type": "market", "broker_order_id": None, "status": "filled",
-                "fees_total": fees_total, "slippage_bps": 0.0, "notes": None,
-            })
-            is_position = False
-            quantity = 0
-
-    if is_position:
-        last_date = price_df.index[-1]
-        last_close = price_df.iloc[-1]['close']
-        actual_turnover = quantity * last_close
-        fees = leg_cost(actual_turnover, side="sell", is_intraday=False)
-        fees_total = sum(fees.values())
-
-        rows.append({
-            "env": "backtest", "run_id": run_id, "strategy": strategy_name,
-            "symbol": symbol, "side": "sell", "quantity": quantity,
-            "signal_time": last_date, "order_time": last_date, "fill_time": last_date,
-            "signal_price": last_close, "fill_price": last_close,
-            "order_type": "market", "broker_order_id": None, "status": "filled",
-            "fees_total": fees_total, "slippage_bps": 0.0,
-            "notes": "forced close - open position at end of backtest window",
-        })
-
-    return rows
 
 
-def run_backtest(engine, run_id: str, signal_fn, strategy_name: str,
-                  signal_kwargs: dict = None, fixed_investment: float = FIXED_INVESTMENT,
-                  min_rows: int = 50, last_n_days: int = None,
-                  start_date: str = None, end_date: str = None):
-    """
-    Runs a backtest across every EQUITY + ETF symbol, using WHICHEVER
-    signal function is passed in.
+def get_last_working_days(last_n_days: int = 220):
+    nse = mcal.get_calendar("NSE")
+    end_date = date.today()
 
-    ... (existing docstring for signal_fn, strategy_name, signal_kwargs, min_rows) ...
+    buffer_days = last_n_days * 2 + 30
+    start_date = end_date - timedelta(days=buffer_days)
 
-    Date window options (use ONE of these, not both) — same convention
-    as quick_eyeball_check() and run_universe_scan() in signal.py:
+    schedule = nse.schedule(start_date=start_date.isoformat(), end_date=end_date.isoformat())
+    trading_dates = sorted(schedule.index.normalize())
 
-    last_n_days : int, optional
-        Restricts each symbol to its own most recent N rows before
-        running the signal function on it.
+    return trading_dates[-last_n_days:]
 
-    start_date, end_date : str, optional
-        Restricts each symbol to this date range instead. FORMAT:
-        "YYYY-MM-DD" string, matched against each symbol's DatetimeIndex.
-    """
-    signal_kwargs = signal_kwargs or {}
-    buffer_rows = signal_kwargs.get("lookback", 20)
-    symbols = load_all_symbols(engine)
-    print(f"Running backtest [{strategy_name}] across {len(symbols)} symbols, run_id={run_id}")
+def get_portfolio_risk(open_positions: dict):
+    total_risk = 0
+    for pos in open_positions.values():
+        percentage_risk = abs(pos['stoploss']-pos['entry_price'])*pos['qty']/FUND
+        total_risk += percentage_risk
 
-    all_rows = []
+    return total_risk
 
-    for idx, symbol in enumerate(symbols, start=1):
-        try:
-            price_df = load_price_data(engine, symbol)
 
-            # --- apply the date window, same convention as elsewhere ---
-            if last_n_days is not None:
-                price_df = price_df.iloc[-last_n_days-buffer_rows:]
-            elif start_date is not None or end_date is not None:
-                price_df = price_df.loc[start_date:end_date]
 
-            if len(price_df) < min_rows:
-                continue
+def should_allocate(open_positions: dict, new_trade_risk: float, turnover: float,
+                    max_portfolio_risk: float = MAX_PORTFOLIO_RISK,
+                    ):
 
-            signals = signal_fn(price_df, **signal_kwargs)
-            symbol_rows = simulate_symbol(price_df, signals, symbol, run_id,
-                                           strategy_name, fixed_investment)
-            all_rows.extend(symbol_rows)
+    return ((get_portfolio_risk(open_positions) + new_trade_risk) <= max_portfolio_risk) and (turnover <= FUND*MAX_PERCENTAGE_ALLOCATION_PER_TRADE)
 
-        except Exception as e:
-            print(f"  [{idx}/{len(symbols)}] {symbol}: skipped due to error ({e})")
-            continue
 
-        if idx % 200 == 0:
-            print(f"  Processed {idx}/{len(symbols)} symbols, {len(all_rows)} transactions so far...")
 
-    if not all_rows:
-        print("No transactions generated.")
-        return
+def portfolio_backtest(engine, run_id: str, signal_fn, strategy_name: str, 
+                       combined_signal_price: dict, signal_kwargs: dict = None, 
+                       last_n_days: int = 220, fixed_investment: float = FUND):
 
-    txns_df = pd.DataFrame(all_rows)
+    open_positions = {}
+    txns = []
+    
+    for d in get_last_working_days(last_n_days):
+        for symbol in combined_signal_price.keys():
+            if combined_signal_price[symbol].loc[d, 'signal'] == 1:
+                if d not in combined_signal_price[symbol].index: continue
+                qty = int(MAX_PER_TRADE_RISK/combined_signal_price[symbol].loc[d, 'percentage_risk'])
+                if qty < 1 or not should_allocate(open_positions, combined_signal_price[symbol].loc[d, 'percentage_risk']*qty, MAX_PORTFOLIO_RISK,combined_signal_price[symbol].loc[d, 'close']*qty ):
+                    continue
+                open_positions[symbol] = {
+                    'entry_date': text(d),
+                    'entry_price': combined_signal_price[symbol].loc[d, 'close'],
+                    'stoploss': combined_signal_price[symbol].loc[d, 'stoploss'],
+                    'target_price': combined_signal_price[symbol].loc[d, 'target_price'],
+                    'qty': qty,
+                    'side': 'buy'
+                }
+                fees = leg_cost(turnover = combined_signal_price[symbol].loc[d,'close']*qty, side = 'buy', is_intraday = False)
+                total_fees = sum(fees.values())
+                
+                txns.append({
+                    "env": "backtest", "run_id": run_id, "strategy": strategy_name,
+                    "symbol": symbol, "side": "buy", "quantity": qty,
+                    "signal_time": d, "order_time": d, "fill_time": d,
+                    "signal_price": combined_signal_price[symbol].loc[d,'close'], "fill_price": combined_signal_price[symbol].loc[d,'close'],
+                    "order_type": "market", "broker_order_id": None, "status": "filled",
+                    "fees_total": total_fees, "slippage_bps": 0.0,
+                    "notes": "forced close - open position at end of backtest window",
+                })
 
-    delete_query = text("""
-        DELETE FROM transactions
-        WHERE strategy = :strategy AND env = 'backtest' AND run_id = :run_id;
-    """)
-    with engine.begin() as conn:
-        conn.execute(delete_query, {"strategy": strategy_name, "run_id": run_id})
-        txns_df.to_sql("transactions", conn, if_exists="append", index=False)
-
-    print(f"\nWrote {len(txns_df)} transactions (strategy={strategy_name}, run_id={run_id}) to Postgres.")
+            elif (combined_signal_price[symbol].loc[d, 'signal'] == -1) and (symbol in open_positions):
+                fees = leg_cost(turnover = combined_signal_price[symbol].loc[d,'close']*open_positions[symbol]['qty'], side = 'sell', is_intraday = False)
+                total_fees = sum(fees.values())
+                
+                txns.append({
+                    "env": "backtest", "run_id": run_id, "strategy": strategy_name,
+                    "symbol": symbol, "side": "sell", "quantity": open_positions[symbol]['qty'],
+                    "signal_time": d, "order_time": d, "fill_time": d,
+                    "signal_price": combined_signal_price[symbol].loc[d,'close'], "fill_price": combined_signal_price[symbol].loc[d,'close'],
+                    "order_type": "market", "broker_order_id": None, "status": "filled",
+                    "fees_total": total_fees, "slippage_bps": 0.0,
+                    "notes": "forced close - open position at end of backtest window",
+                })
+                del open_positions[symbol]
 
 
 def main():
