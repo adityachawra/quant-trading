@@ -136,7 +136,7 @@ def main():
 
         existing_max_date = get_existing_max_date(engine, symbol)
 
-        if existing_max_date is not None and existing_max_date >= today - timedelta(days=1):
+        if existing_max_date is not None and existing_max_date >= today:
             print(f"[{idx}/{total}] {symbol}: already up to date, skipping.")
             continue
 

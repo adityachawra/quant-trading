@@ -88,11 +88,29 @@ def save_instruments_to_postgres(df):
             updated_at = EXCLUDED.updated_at;
     """)
 
+    # Step 3: hard-delete orphans. Any row in `instruments` whose
+    # (exchange, tradingsymbol) is NOT in the freshly fetched staging set
+    # no longer exists in Kite's current master (delisted, series change,
+    # recycled token). Left behind, its stale instrument_token makes the
+    # daily fetcher fail with "invalid token". NOT EXISTS is NULL-safe.
+    # This touches the reference list ONLY — daily_ohlcv is never referenced
+    # here, so existing price history is untouched.
+    delete_orphans_query = text("""
+        DELETE FROM instruments i
+        WHERE NOT EXISTS (
+            SELECT 1 FROM instruments_staging s
+            WHERE s.exchange = i.exchange
+              AND s.tradingsymbol = i.tradingsymbol
+        );
+    """)
+
     with engine.begin() as conn:
         conn.execute(upsert_query)
+        deleted = conn.execute(delete_orphans_query).rowcount
         conn.execute(text("DROP TABLE instruments_staging;"))
 
     print(f"Upserted {len(df)} instruments into Postgres.")
+    print(f"Deleted {deleted} orphaned instruments no longer in Kite's master.")
 
 
 def main():

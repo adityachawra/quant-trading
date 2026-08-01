@@ -125,6 +125,7 @@ def run_backtest(engine, run_id: str, signal_fn, strategy_name: str,
         "YYYY-MM-DD" string, matched against each symbol's DatetimeIndex.
     """
     signal_kwargs = signal_kwargs or {}
+    buffer_rows = signal_kwargs.get("lookback", 20)
     symbols = load_all_symbols(engine)
     print(f"Running backtest [{strategy_name}] across {len(symbols)} symbols, run_id={run_id}")
 
@@ -136,7 +137,7 @@ def run_backtest(engine, run_id: str, signal_fn, strategy_name: str,
 
             # --- apply the date window, same convention as elsewhere ---
             if last_n_days is not None:
-                price_df = price_df.iloc[-last_n_days:]
+                price_df = price_df.iloc[-last_n_days-buffer_rows:]
             elif start_date is not None or end_date is not None:
                 price_df = price_df.loc[start_date:end_date]
 
