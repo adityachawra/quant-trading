@@ -70,6 +70,7 @@ def generate_signals(price_df: pd.DataFrame, lookback: int = 20, num_std: float 
             -1  = exit long
              0  = no action
     """
+    
     rolling_mean = price_df['close'].rolling(lookback).mean()
     rolling_std = price_df['close'].rolling(lookback).std()
     lower_band = rolling_mean - (num_std * rolling_std)

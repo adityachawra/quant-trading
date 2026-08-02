@@ -17,7 +17,7 @@ from transaction_cost import leg_cost
 
 load_dotenv()
 
-FUND = 10000
+FUND = 500000
 MAX_PORTFOLIO_RISK = 0.4
 MAX_PER_TRADE_RISK = 0.03
 MAX_PERCENTAGE_ALLOCATION_PER_TRADE = 0.2
@@ -180,8 +180,9 @@ def main():
 
     run_id = f"bb_v1_{date.today().isoformat()}"
 
-    price_signal_df = combines_signal_price(engine, bb_generate_signals, signal_kwargs={'lookback': 35, 'num_std': 2})
-    portfolio_backtest(engine, run_id, "Mean_Z_Score_BB", price_signal_df, 1.5, 220, FUND)
+    price_signal_df = combines_signal_price(engine, bb_generate_signals, signal_kwargs={'lookback': 50, 'num_std': 1.5})
+    
+    portfolio_backtest(engine, run_id, "Mean_Z_Score_BB1", price_signal_df, 1.5, 365, 500000)
 
 
 if __name__ == "__main__":
