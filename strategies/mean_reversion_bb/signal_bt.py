@@ -74,28 +74,28 @@ def generate_signals(price_df: pd.DataFrame, lookback: int = 20, num_std: float 
     rolling_std = price_df['close'].rolling(lookback).std()
     lower_band = rolling_mean - (num_std * rolling_std)
 
-    signals = pd.Series(0, index=price_df.index)
+    signals = pd.DataFrame(index=price_df.index)
+    signals['signal'] = 0
 
     is_position = False
     watch_to_buy = False
 
     for i in range(len(price_df)):
-
-        if is_position:
-            stoploss = price_df.iloc[i]['close'] < lower_band.iloc[i] - (rolling_mean.iloc[i] - lower_band.iloc[i]) / 2
-            if (price_df.iloc[i]['high'] > target_price) or stoploss:
-                signals.iloc[i] = -1
-                is_position = False
-
-        else:
-            if price_df.iloc[i]['low'] < lower_band.iloc[i]:
-                watch_to_buy = True
-            if watch_to_buy:
-                if price_df.iloc[i]['close'] > lower_band.iloc[i]:
-                    signals.iloc[i] = 1
-                    watch_to_buy = False
-                    is_position = True
-                    target_price = rolling_mean.iloc[i]
+   
+        if price_df.iloc[i]['low'] < lower_band.iloc[i]:
+            watch_to_buy = True
+        if watch_to_buy:
+            if price_df.iloc[i]['close'] > lower_band.iloc[i]:
+                signals.loc[price_df.index[i], 'signal'] = 1
+                watch_to_buy = False
+                entry_price = price_df.iloc[i]['close']
+                target_price = rolling_mean.iloc[i]
+                stoploss = lower_band.iloc[i] - (rolling_mean.iloc[i] - lower_band.iloc[i]) / 2
+                percentage_risk = abs(entry_price - stoploss) / entry_price if stoploss else 0
+                signals.loc[price_df.index[i], 'entry_price'] = entry_price
+                signals.loc[price_df.index[i], 'target_price'] = target_price
+                signals.loc[price_df.index[i], 'stoploss'] = stoploss
+                signals.loc[price_df.index[i], 'percentage_risk'] = percentage_risk
 
     return signals
 
